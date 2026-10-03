@@ -11,7 +11,7 @@ import warnings
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import Final, Literal, TypedDict
+from typing import Final, Literal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -19,7 +19,6 @@ import openai
 import pytest
 import respx
 from fastapi import HTTPException
-from typing_extensions import ReadOnly
 
 import litellm
 from litellm import Router
@@ -13787,14 +13786,12 @@ def _anthropic_messages_make_wrapper() -> FallbackAwareAnthropicMessagesStream:
     return FallbackAwareAnthropicMessagesStream(_anthropic_messages_empty_generator(), object())
 
 
-class _AnthropicMessagesRouterKwargs(TypedDict, total=False):
-    fallbacks: ReadOnly[list[dict[str, list[str]]] | None]
-    content_policy_fallbacks: ReadOnly[list[dict[str, list[str]]] | None]
-    enable_weighted_failover: ReadOnly[bool]
-
-
-def _anthropic_messages_make_router(router_kwargs: _AnthropicMessagesRouterKwargs) -> Router:
-    fallbacks: Final = router_kwargs.get("fallbacks", [{"primary": ["fallback"]}])
+def _anthropic_messages_make_router(
+    fallbacks: list[dict[str, list[str]]] | None | Literal["__default__"] = "__default__",
+    content_policy_fallbacks: list[dict[str, list[str]]] | None = None,
+    enable_weighted_failover: bool = False,
+) -> Router:
+    router_fallbacks: Final = [{"primary": ["fallback"]}] if fallbacks == "__default__" else fallbacks
     return Router(
         model_list=[
             {
@@ -13811,9 +13808,9 @@ def _anthropic_messages_make_router(router_kwargs: _AnthropicMessagesRouterKwarg
                 },
             },
         ],
-        fallbacks=fallbacks,
-        content_policy_fallbacks=router_kwargs.get("content_policy_fallbacks"),
-        enable_weighted_failover=router_kwargs.get("enable_weighted_failover", False),
+        fallbacks=router_fallbacks,
+        content_policy_fallbacks=content_policy_fallbacks,
+        enable_weighted_failover=enable_weighted_failover,
     )
 
 
@@ -14153,41 +14150,53 @@ def _anthropic_messages_two_order_primary_model_list() -> list:
 
 
 @pytest.mark.parametrize(
-    "router_kwargs,request_kwargs,expected",
+    "fallbacks,request_kwargs,expected,content_policy_fallbacks,enable_weighted_failover",
     [
-        pytest.param({"fallbacks": None}, {"model": "primary"}, False, id="no-fallbacks"),
-        pytest.param({"fallbacks": [{"primary": ["fallback"]}]}, {"model": "primary"}, True, id="group-fallback"),
-        pytest.param({"fallbacks": [{"other": ["fallback"]}]}, {"model": "primary"}, False, id="unrelated-group"),
+        pytest.param(None, {"model": "primary"}, False, None, False, id="no-fallbacks"),
+        pytest.param([{"primary": ["fallback"]}], {"model": "primary"}, True, None, False, id="group-fallback"),
+        pytest.param([{"other": ["fallback"]}], {"model": "primary"}, False, None, False, id="unrelated-group"),
         pytest.param(
-            {"fallbacks": [{"*": ["fallback"]}]},
+            [{"*": ["fallback"]}],
             {"model": "primary", "fallbacks": None},
+            False,
+            None,
             False,
             id="wildcard-overridden-by-request-none",
         ),
-        pytest.param({"fallbacks": [{"*": ["fallback"]}]}, {"model": "primary"}, True, id="wildcard"),
-        pytest.param({"fallbacks": None}, {"model": "primary", "fallbacks": [{"model": "fallback"}]}, True, id="request-dict-fallback"),
-        pytest.param({"fallbacks": None}, {"model": "primary", "fallbacks": ["fallback"]}, True, id="request-list-fallback"),
+        pytest.param([{"*": ["fallback"]}], {"model": "primary"}, True, None, False, id="wildcard"),
+        pytest.param(None, {"model": "primary", "fallbacks": [{"model": "fallback"}]}, True, None, False, id="request-dict-fallback"),
+        pytest.param(None, {"model": "primary", "fallbacks": ["fallback"]}, True, None, False, id="request-list-fallback"),
         pytest.param(
-            {"fallbacks": [{"primary": ["fallback"]}]},
+            [{"primary": ["fallback"]}],
             {"model": "primary", "disable_fallbacks": True},
+            False,
+            None,
             False,
             id="disable-fallbacks",
         ),
         pytest.param(
-            {"fallbacks": None, "content_policy_fallbacks": [{"primary": ["fallback"]}]},
+            None,
             {"model": "primary"},
             True,
+            [{"primary": ["fallback"]}],
+            False,
             id="content-policy-fallback",
         ),
-        pytest.param({"fallbacks": None, "enable_weighted_failover": True}, {"model": "primary"}, True, id="weighted-failover"),
+        pytest.param(None, {"model": "primary"}, True, None, True, id="weighted-failover"),
     ],
 )
 def test_anthropic_messages_stream_can_fall_back_direct_call(
-    router_kwargs: _AnthropicMessagesRouterKwargs,
+    fallbacks: list[dict[str, list[str]]] | None,
     request_kwargs: dict[str, object],
     expected: bool,
+    content_policy_fallbacks: list[dict[str, list[str]]] | None,
+    enable_weighted_failover: bool,
 ) -> None:
-    router = _anthropic_messages_make_router(router_kwargs)
+    router = _anthropic_messages_make_router(
+        fallbacks=fallbacks,
+        content_policy_fallbacks=content_policy_fallbacks,
+        enable_weighted_failover=enable_weighted_failover,
+    )
     assert router._anthropic_messages_stream_can_fall_back("primary", request_kwargs) is expected
 
 

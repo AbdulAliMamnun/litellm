@@ -972,9 +972,6 @@ async def common_checks(
         team_id=valid_token.team_id if valid_token is not None else None,
     )
 
-    if valid_token is not None:
-        valid_token.end_user_models = end_user_object.models if end_user_object is not None else None
-
     skip_all_budget_checks: Final = skip_budget_checks or route_skips_budget_checks(route=route)
 
     membership_user_id: Final = (
@@ -1105,24 +1102,18 @@ async def common_checks(
     if end_user_object is not None and end_user_object.models:
         with tracer.trace("litellm.proxy.auth.common_checks.can_customer_call_model"):
             if _model:
-                _can_object_call_model(
+                can_customer_access_model(
                     model=_model,
+                    end_user_object=end_user_object,
                     llm_router=llm_router,
-                    models=end_user_object.models,
-                    team_model_aliases=_team_model_aliases_for_auth_check(valid_token),
-                    team_id=valid_token.team_id if valid_token else None,
                     key_model_aliases=key_model_aliases_for_auth_check(valid_token),
-                    object_type="customer",
                 )
             for fallback_model in request_fallback_model_names(_typed_request_body(request_body)):
-                _can_object_call_model(
+                can_customer_access_model(
                     model=fallback_model,
+                    end_user_object=end_user_object,
                     llm_router=llm_router,
-                    models=end_user_object.models,
-                    team_model_aliases=_team_model_aliases_for_auth_check(valid_token),
-                    team_id=valid_token.team_id if valid_token else None,
                     key_model_aliases=key_model_aliases_for_auth_check(valid_token),
-                    object_type="customer",
                 )
 
     # 1.1 - 2.2 - 3.0.2 - 3.0.3: Project checks (blocked, model access, budget)
@@ -1465,6 +1456,7 @@ def get_actual_routes(allowed_routes: list) -> list:
 
 
 KEY_END_USER_BUDGET_ID_METADATA_FIELD: Final = "end_user_budget_id"
+_KEY_METADATA_ADAPTER: Final[TypeAdapter[Mapping[str, object] | None]] = TypeAdapter(Mapping[str, object] | None)
 
 
 def get_key_end_user_budget_id(key_metadata: Mapping[str, object] | None) -> str | None:
@@ -1914,38 +1906,6 @@ async def _end_user_is_known_unrestricted(
     return registry is not None and end_user_id not in registry
 
 
-async def cache_end_user_row(
-    end_user_id: str,
-    prisma_client: PrismaClient,
-    user_api_key_cache: UserApiKeyCache,
-    parent_otel_span: Span | None = None,
-    *,
-    use_writer: bool = False,
-) -> LiteLLM_EndUserTable | None:
-    response: Final = await _dictable_table(
-        EndUserRepository(prisma_client, use_writer=use_writer), "end_user"
-    ).find_unique(
-        where={"user_id": end_user_id},
-        include={"litellm_budget_table": True, "object_permission": True},
-    )
-    if response is None:
-        return None
-
-    end_user_row: Final = await _apply_default_budget_to_end_user(
-        end_user_obj=LiteLLM_EndUserTable.model_validate(response.dict()),
-        prisma_client=prisma_client,
-        user_api_key_cache=user_api_key_cache,
-        parent_otel_span=parent_otel_span,
-    )
-    await user_api_key_cache.async_set_cache(
-        key=end_user_cache_key(end_user_id),
-        value=end_user_row,
-        model_type=LiteLLM_EndUserTable,
-        ttl=get_management_object_ttl(user_api_key_cache),
-    )
-    return end_user_row
-
-
 @log_db_metrics
 @with_service_target(AUTH_OBJECTS_TARGET)
 async def get_end_user_object(
@@ -2012,14 +1972,25 @@ async def get_end_user_object(
 
     # Fetch from database
     try:
-        end_user_row: Final = await cache_end_user_row(
-            end_user_id=end_user_id,
+        response: Final = await _dictable_table(EndUserRepository(prisma_client), "end_user").find_unique(
+            where={"user_id": end_user_id},
+            include={"litellm_budget_table": True, "object_permission": True},
+        )
+        if response is None:
+            raise Exception
+
+        end_user_row: Final = await _apply_default_budget_to_end_user(
+            end_user_obj=LiteLLM_EndUserTable.model_validate(response.dict()),
             prisma_client=prisma_client,
             user_api_key_cache=user_api_key_cache,
             parent_otel_span=parent_otel_span,
         )
-        if end_user_row is None:
-            return None
+        await user_api_key_cache.async_set_cache(
+            key=_key,
+            value=end_user_row,
+            model_type=LiteLLM_EndUserTable,
+            ttl=get_management_object_ttl(user_api_key_cache),
+        )
 
         if key_end_user_budget_id is None:
             return end_user_row
@@ -4060,7 +4031,6 @@ def _copy_user_api_key_auth_for_cache(
     copied_key_obj.budget_throttle_pct = None
     copied_key_obj.parent_otel_span = None
     copied_key_obj.request_route = None
-    copied_key_obj.end_user_models = None
     return copied_key_obj
 
 
@@ -4566,7 +4536,6 @@ def _can_object_call_model(
         )
     )
     after_team_alias: Final = team_model_aliases.get(model, model) if team_model_aliases else model
-    team_alias_applied: Final = after_team_alias != model
     after_key_alias: Final = (
         key_model_aliases.get(after_team_alias, after_team_alias) if key_model_aliases else after_team_alias
     )
@@ -4580,7 +4549,6 @@ def _can_object_call_model(
         if key_alias_applied
         else (
             *((model, compaction_parent) if compaction_parent is not None else (model,)),
-            *((after_team_alias,) if object_type == "customer" and team_alias_applied else ()),
             *((global_or_router_alias_target,) if global_or_router_alias_target else ()),
         )
     )
@@ -4591,7 +4559,7 @@ def _can_object_call_model(
             model=m,
             llm_router=llm_router,
             models=models,
-            team_model_aliases=team_model_aliases if object_type != "customer" else None,
+            team_model_aliases=team_model_aliases,
             team_id=team_id,
         ):
             return True
@@ -4757,16 +4725,6 @@ def _model_in_team_aliases(model: str, team_model_aliases: dict[str, str] | None
 
 def key_model_aliases_for_auth_check(valid_token: UserAPIKeyAuth | None) -> Mapping[str, str] | None:
     return alias_map(valid_token.aliases) if valid_token is not None and valid_token.aliases else None
-
-
-def _team_model_aliases_for_auth_check(valid_token: UserAPIKeyAuth | None) -> dict[str, str] | None:
-    if valid_token is None or valid_token.team_model_aliases is None:
-        return None
-    return {
-        alias: target
-        for alias, target in valid_token.team_model_aliases.items()
-        if isinstance(alias, str) and isinstance(target, str)
-    }
 
 
 def _resolve_key_models_for_auth_check(valid_token: UserAPIKeyAuth) -> list[str]:
@@ -5112,25 +5070,6 @@ async def can_key_call_model(
         raise
 
 
-def _check_customer_model_access_for_resolved_model(
-    model: str,
-    valid_token: UserAPIKeyAuth,
-    llm_router: litellm.Router | None,
-) -> None:
-    if not valid_token.end_user_models:
-        return
-
-    _can_object_call_model(
-        model=model,
-        llm_router=llm_router,
-        models=valid_token.end_user_models,
-        team_model_aliases=_team_model_aliases_for_auth_check(valid_token),
-        team_id=valid_token.team_id,
-        key_model_aliases=key_model_aliases_for_auth_check(valid_token),
-        object_type="customer",
-    )
-
-
 async def can_key_call_resolved_model(
     model: str,
     llm_model_list: Sequence[object] | None,
@@ -5225,11 +5164,23 @@ async def can_key_call_resolved_model(
                 key_model_aliases=key_model_aliases_for_auth_check(valid_token),
             )
 
-    _check_customer_model_access_for_resolved_model(
-        model=model,
-        valid_token=valid_token,
-        llm_router=llm_router,
-    )
+    if valid_token.end_user_id is not None and prisma_client is not None:
+        key_metadata: Final = _KEY_METADATA_ADAPTER.validate_python(valid_token.metadata)
+        end_user_object: Final = await get_end_user_object(
+            end_user_id=valid_token.end_user_id,
+            prisma_client=prisma_client,
+            user_api_key_cache=user_api_key_cache,
+            proxy_logging_obj=proxy_logging_obj,
+            token_end_user_max_budget=valid_token.end_user_max_budget,
+            key_end_user_budget_id=get_key_end_user_budget_id(key_metadata),
+        )
+        if end_user_object is not None and end_user_object.models:
+            can_customer_access_model(
+                model=model,
+                end_user_object=end_user_object,
+                llm_router=llm_router,
+                key_model_aliases=key_model_aliases_for_auth_check(valid_token),
+            )
 
 
 def can_org_access_model(
@@ -5395,6 +5346,21 @@ def can_project_access_model(
         models=project_object.models if project_object else [],
         key_model_aliases=key_model_aliases,
         object_type="project",
+    )
+
+
+def can_customer_access_model(
+    model: str | list[str],
+    end_user_object: LiteLLM_EndUserTable,
+    llm_router: Router | None,
+    key_model_aliases: Mapping[str, str] | None = None,
+) -> Literal[True]:
+    return _can_object_call_model(
+        model=model,
+        llm_router=llm_router,
+        models=end_user_object.models,
+        key_model_aliases=key_model_aliases,
+        object_type="customer",
     )
 
 

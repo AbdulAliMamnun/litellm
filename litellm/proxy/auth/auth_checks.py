@@ -1976,6 +1976,7 @@ async def get_end_user_object(
             where={"user_id": end_user_id},
             include={"litellm_budget_table": True, "object_permission": True},
         )
+
         if response is None:
             raise Exception
 
@@ -1985,6 +1986,7 @@ async def get_end_user_object(
             user_api_key_cache=user_api_key_cache,
             parent_otel_span=parent_otel_span,
         )
+
         await user_api_key_cache.async_set_cache(
             key=_key,
             value=end_user_row,

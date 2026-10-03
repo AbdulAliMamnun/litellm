@@ -17018,7 +17018,7 @@ async def test_catalog_cached_revision_retains_newly_discovered_tool_routes(monk
         if reader is not None:
             await asyncio.wait_for(ready.wait(), 2)
         async with manager.catalog.operation():
-            manager._create_prefixed_tools([Tool(name="search", input_schema={})], second)
+            manager.create_prefixed_tools([Tool(name="search", input_schema={})], second)
         assert manager.published_tool_routes["search"] == "second"
         release.set()
         if reader is not None:
@@ -17031,3 +17031,36 @@ async def test_catalog_cached_revision_retains_newly_discovered_tool_routes(monk
         if reader is not None:
             reader.cancel()
             await asyncio.gather(reader, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "request_cursor,next_cursor,expected_owner",
+    [(None, None, "notes"), (None, "next", "other"), ("last", None, "other")],
+)
+async def test_catalog_page_registers_bare_routes_only_for_complete_initial_discovery(
+    request_cursor, next_cursor, expected_owner
+):
+    from types import SimpleNamespace
+
+    from mcp.types import ListToolsResult, PaginatedRequestParams
+
+    from litellm.proxy._experimental.mcp_server.catalog import get_server_tools
+
+    manager = _catalog_manager(LIST_NOTES)
+    server = _notes_server()
+    other = MCPServer(server_id="other", name="other", transport=MCPTransport.http)
+    manager.registry = {server.server_id: server, other.server_id: other}
+    manager.create_prefixed_tools([LIST_NOTES], other)
+    manager.create_mcp_client.return_value = SimpleNamespace(
+        list_tools_page=AsyncMock(return_value=ListToolsResult(tools=[LIST_NOTES], next_cursor=next_cursor))
+    )
+
+    result = await get_server_tools(
+        manager, server, params=PaginatedRequestParams(cursor=request_cursor)
+    )
+
+    assert [tool.name for tool in result.tools] == ["notes-list_notes"]
+    assert result.next_cursor == next_cursor
+    assert manager._get_mcp_server_from_tool_name("notes-list_notes").server_id == "notes"
+    assert manager._get_mcp_server_from_tool_name("list_notes").server_id == expected_owner

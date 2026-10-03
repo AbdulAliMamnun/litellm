@@ -4039,7 +4039,7 @@ class Router:
         other_bucket: Final = "metadata" if metadata_variable_name == "litellm_metadata" else "litellm_metadata"
         other_bucket_metadata: Final = kwargs.get(other_bucket)
         if isinstance(other_bucket_metadata, Mapping) and KUBERNETES_POD_ROUTING_KEY in other_bucket_metadata:
-            kwargs[other_bucket] = {
+            kwargs[other_bucket] = {  # rebind-ok: this method updates the router's request kwargs in place
                 **other_bucket_metadata,
                 KUBERNETES_POD_ROUTING_KEY: routing,
             }

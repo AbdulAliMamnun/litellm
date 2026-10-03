@@ -1651,6 +1651,27 @@ class LiteLLMProxyRequestSetup:
         return user_api_key_logged_metadata
 
     @staticmethod
+    def add_budget_metadata_to_request_metadata(
+        data: dict, user_api_key_dict: UserAPIKeyAuth, _metadata_variable_name: str
+    ) -> None:
+        """The principal's budgets and spend: prometheus reports them and the per-model budget
+        limiter reads the ``*_model_max_budget`` entries to charge spend."""
+        data[_metadata_variable_name]["user_api_key_team_max_budget"] = user_api_key_dict.team_max_budget
+        data[_metadata_variable_name]["user_api_key_team_spend"] = user_api_key_dict.team_spend
+        data[_metadata_variable_name]["user_api_key_team_model_max_budget"] = user_api_key_dict.team_model_max_budget
+        data[_metadata_variable_name]["user_api_key_request_route"] = user_api_key_dict.request_route
+        data[_metadata_variable_name]["user_api_key_spend"] = user_api_key_dict.spend
+        data[_metadata_variable_name]["user_api_key_max_budget"] = user_api_key_dict.max_budget
+        data[_metadata_variable_name]["user_api_key_model_max_budget"] = user_api_key_dict.model_max_budget
+        data[_metadata_variable_name]["user_api_key_end_user_model_max_budget"] = (
+            user_api_key_dict.end_user_model_max_budget
+        )
+        data[_metadata_variable_name]["user_api_key_user_spend"] = user_api_key_dict.user_spend
+        data[_metadata_variable_name]["user_api_key_user_max_budget"] = user_api_key_dict.user_max_budget
+        data[_metadata_variable_name]["user_api_key_user_model_max_budget"] = user_api_key_dict.user_model_max_budget
+        data[_metadata_variable_name].update(carried_budget_metadata(user_api_key_dict))
+
+    @staticmethod
     def add_user_api_key_auth_to_request_metadata(
         data: dict,
         user_api_key_dict: UserAPIKeyAuth,
@@ -2405,27 +2426,9 @@ async def add_litellm_data_to_request(
         _metadata_variable_name=_metadata_variable_name,
     )
 
-    # Team spend, budget - used by prometheus.py
-    data[_metadata_variable_name]["user_api_key_team_max_budget"] = user_api_key_dict.team_max_budget
-    data[_metadata_variable_name]["user_api_key_team_spend"] = user_api_key_dict.team_spend
-    data[_metadata_variable_name]["user_api_key_team_model_max_budget"] = user_api_key_dict.team_model_max_budget
-    data[_metadata_variable_name]["user_api_key_request_route"] = user_api_key_dict.request_route
-
-    # API Key spend, budget - used by prometheus.py
-    data[_metadata_variable_name]["user_api_key_spend"] = user_api_key_dict.spend
-    data[_metadata_variable_name]["user_api_key_max_budget"] = user_api_key_dict.max_budget
-    data[_metadata_variable_name]["user_api_key_model_max_budget"] = user_api_key_dict.model_max_budget
-    data[_metadata_variable_name]["user_api_key_end_user_model_max_budget"] = (
-        user_api_key_dict.end_user_model_max_budget
+    LiteLLMProxyRequestSetup.add_budget_metadata_to_request_metadata(
+        data=data, user_api_key_dict=user_api_key_dict, _metadata_variable_name=_metadata_variable_name
     )
-
-    # User spend, budget - used by prometheus.py
-    # Follow same pattern as team and API key budgets
-    data[_metadata_variable_name]["user_api_key_user_spend"] = user_api_key_dict.user_spend
-    data[_metadata_variable_name]["user_api_key_user_max_budget"] = user_api_key_dict.user_max_budget
-    user_model_budget: Final = user_api_key_dict.user_model_max_budget
-    data[_metadata_variable_name]["user_api_key_user_model_max_budget"] = user_model_budget  # rebind-ok: out-param
-    data[_metadata_variable_name].update(carried_budget_metadata(user_api_key_dict))
 
     data[_metadata_variable_name]["user_api_key_metadata"] = strip_callback_config(user_api_key_dict.metadata)
     data[_metadata_variable_name]["user_api_key_team_metadata"] = strip_callback_config(user_api_key_dict.team_metadata)

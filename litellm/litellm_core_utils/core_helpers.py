@@ -380,17 +380,15 @@ def _standard_logging_kubernetes_pod_routing(
         or pod_count < 1
     ):
         return None
-    match selection:
-        case "round_robin" | "session_affinity" | "session_affinity_retry":
-            routing_record: Final[StandardLoggingKubernetesPodRouting] = {
-                "service_host": service_host,
-                "pod_ip": pod_ip,
-                "pod_count": pod_count,
-                "selection": selection,
-            }
-            return routing_record
-        case _:
-            return None
+    if selection in ("round_robin", "session_affinity", "session_affinity_retry"):
+        routing_record: Final[StandardLoggingKubernetesPodRouting] = {
+            "service_host": service_host,
+            "pod_ip": pod_ip,
+            "pod_count": pod_count,
+            "selection": selection,
+        }
+        return routing_record
+    return None
 
 
 def get_litellm_metadata_from_kwargs(kwargs: dict):

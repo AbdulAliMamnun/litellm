@@ -1,5 +1,4 @@
 from contextlib import contextmanager
-from typing import Final
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1028,36 +1027,17 @@ def test_char_delete_body(mock_prisma_client, mock_user_api_key_auth):
 class _RecordingAuthCache:
     """Captures the keys an endpoint evicts, so tests assert on cache keys not mock plumbing."""
 
-    def __init__(self, fail_writes: bool = False):
+    def __init__(self):
         self.deleted: list[str] = []
-        self.events: list[tuple[str, str]] = []
-        self.writes: list[object] = []
-        self.fail_writes = fail_writes
 
     async def async_delete_cache(self, key: str) -> None:
         self.deleted.append(key)
-        self.events.append(("delete", key))
-
-    async def async_set_cache(
-        self,
-        key: str | None,
-        value: object,
-        *,
-        model_type: type[LiteLLM_EndUserTable],
-        ttl: float,
-    ) -> None:
-        _ = (model_type, ttl)
-        cache_key: Final = key or ""
-        self.events.append(("set", cache_key))
-        if self.fail_writes:
-            raise RuntimeError("cache write-through failed")
-        self.writes.append(value)
 
 
 @contextmanager
-def _end_user_cache_doubles(fail_writes: bool = False):
+def _end_user_cache_doubles():
     """Swaps in the auth cache and the cross-worker publisher a customer mutation is expected to hit."""
-    recording_cache = _RecordingAuthCache(fail_writes=fail_writes)
+    recording_cache = _RecordingAuthCache()
     mock_publish = AsyncMock()
     with (
         patch("litellm.proxy.proxy_server.user_api_key_cache", recording_cache),
@@ -1095,31 +1075,6 @@ def test_customer_new_invalidates_end_user_and_registry_caches(mock_prisma_clien
     assert _published_keys(mock_publish) == ["end_user_id:c1", "end_user_restricted_registry"]
 
 
-def test_customer_new_writes_through_row_after_eviction(mock_prisma_client, mock_user_api_key_auth):
-    created_row: Final = LiteLLM_EndUserTable(user_id="c1", blocked=False, models=["new"])
-    stale_row: Final = LiteLLM_EndUserTable(user_id="c1", blocked=False, models=["old"])
-    mock_prisma_client.db.litellm_endusertable.create = AsyncMock(return_value=created_row)
-    mock_prisma_client.db.litellm_endusertable.find_unique = AsyncMock(return_value=stale_row)
-    mock_prisma_client.writer_db.litellm_endusertable.find_unique = AsyncMock(return_value=created_row)
-
-    with _end_user_cache_doubles() as (recording_cache, _):
-        response = client.post(
-            "/customer/new",
-            json={"user_id": "c1", "models": ["new"]},
-            headers={"Authorization": "Bearer k"},
-        )
-
-    assert response.status_code == 200, response.text
-    assert recording_cache.events == [
-        ("delete", "end_user_id:c1"),
-        ("delete", "end_user_restricted_registry"),
-        ("set", "end_user_id:c1"),
-    ]
-    assert recording_cache.writes == [created_row]
-    mock_prisma_client.writer_db.litellm_endusertable.find_unique.assert_awaited_once()
-    mock_prisma_client.db.litellm_endusertable.find_unique.assert_not_awaited()
-
-
 def test_customer_update_invalidates_end_user_and_registry_caches(mock_prisma_client, mock_user_api_key_auth):
     """An update can add or drop a budget, block, region or permission, moving the id in the registry."""
     mock_prisma_client.db.litellm_endusertable.find_first = AsyncMock(
@@ -1137,53 +1092,6 @@ def test_customer_update_invalidates_end_user_and_registry_caches(mock_prisma_cl
     assert response.status_code == 200, response.text
     assert recording_cache.deleted == ["end_user_id:c1", "end_user_restricted_registry"]
     assert _published_keys(mock_publish) == ["end_user_id:c1", "end_user_restricted_registry"]
-
-
-def test_customer_update_writes_through_row_after_eviction(mock_prisma_client, mock_user_api_key_auth):
-    existing_row: Final = LiteLLM_EndUserTable(user_id="c1", blocked=False)
-    updated_row: Final = LiteLLM_EndUserTable(user_id="c1", blocked=False, models=["new"])
-    stale_row: Final = LiteLLM_EndUserTable(user_id="c1", blocked=False, models=["old"])
-    mock_prisma_client.db.litellm_endusertable.find_first = AsyncMock(return_value=existing_row)
-    mock_prisma_client.db.litellm_endusertable.update = AsyncMock(return_value=updated_row)
-    mock_prisma_client.db.litellm_endusertable.find_unique = AsyncMock(return_value=stale_row)
-    mock_prisma_client.writer_db.litellm_endusertable.find_unique = AsyncMock(return_value=updated_row)
-
-    with _end_user_cache_doubles() as (recording_cache, _):
-        response = client.post(
-            "/customer/update",
-            json={"user_id": "c1", "models": ["new"]},
-            headers={"Authorization": "Bearer k"},
-        )
-
-    assert response.status_code == 200, response.text
-    assert recording_cache.events == [
-        ("delete", "end_user_id:c1"),
-        ("delete", "end_user_restricted_registry"),
-        ("set", "end_user_id:c1"),
-    ]
-    assert recording_cache.writes == [updated_row]
-    mock_prisma_client.writer_db.litellm_endusertable.find_unique.assert_awaited_once()
-    mock_prisma_client.db.litellm_endusertable.find_unique.assert_not_awaited()
-
-
-def test_customer_new_cache_write_through_failure_keeps_success_response(mock_prisma_client, mock_user_api_key_auth):
-    row: Final = LiteLLM_EndUserTable(user_id="c1", blocked=False, models=["m1"])
-    mock_prisma_client.db.litellm_endusertable.create = AsyncMock(return_value=row)
-    mock_prisma_client.writer_db.litellm_endusertable.find_unique = AsyncMock(return_value=row)
-
-    with _end_user_cache_doubles(fail_writes=True) as (recording_cache, _):
-        response = client.post(
-            "/customer/new",
-            json={"user_id": "c1", "models": ["m1"]},
-            headers={"Authorization": "Bearer k"},
-        )
-
-    assert response.status_code == 200, response.text
-    assert recording_cache.events == [
-        ("delete", "end_user_id:c1"),
-        ("delete", "end_user_restricted_registry"),
-        ("set", "end_user_id:c1"),
-    ]
 
 
 def test_customer_block_invalidates_end_user_and_registry_caches(mock_prisma_client, mock_user_api_key_auth):

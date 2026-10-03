@@ -5082,7 +5082,9 @@ class MCPServerManager:
             {seen: kept for seen, kept in self._catalog_alert_signatures.items() if seen != key}
         )
 
-    def create_prefixed_tools(self, tools: list[MCPTool], server: MCPServer, add_prefix: bool = True) -> list[MCPTool]:
+    def create_prefixed_tools(
+        self, tools: list[MCPTool], server: MCPServer, add_prefix: bool = True, *, register_bare_names: bool = True
+    ) -> list[MCPTool]:
         """
         Create prefixed tools and update tool mapping.
 
@@ -5105,7 +5107,8 @@ class MCPServerManager:
             # short ID) so call_tool can resolve regardless of which form a
             # caller / cached client is using.
             for spelling in iter_known_tool_name_spellings(original_name, server):
-                self.tool_name_to_mcp_server_name_mapping[spelling] = prefix
+                if register_bare_names or spelling != original_name:
+                    self.tool_name_to_mcp_server_name_mapping[spelling] = prefix
 
         verbose_logger.info("Successfully fetched %s tools from server %s", len(prefixed_tools), server.name)
         return prefixed_tools

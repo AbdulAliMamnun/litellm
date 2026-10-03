@@ -100,31 +100,6 @@ def _empty_proxy_environment() -> Mapping[str, str]:
     return {}
 
 
-def _patch_router_pod_discovery(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    clock: Callable[[], float] | None = None,
-    refresh_interval_seconds: float | None = None,
-) -> None:
-    def create_discovery() -> KubernetesPodDiscovery:
-        if refresh_interval_seconds is not None and clock is not None:
-            return KubernetesPodDiscovery(
-                refresh_interval_seconds=refresh_interval_seconds,
-                clock=clock,
-                proxy_environment=_empty_proxy_environment,
-            )
-        if refresh_interval_seconds is not None:
-            return KubernetesPodDiscovery(
-                refresh_interval_seconds=refresh_interval_seconds,
-                proxy_environment=_empty_proxy_environment,
-            )
-        if clock is not None:
-            return KubernetesPodDiscovery(clock=clock, proxy_environment=_empty_proxy_environment)
-        return KubernetesPodDiscovery(proxy_environment=_empty_proxy_environment)
-
-    monkeypatch.setattr("litellm.router.KubernetesPodDiscovery", create_discovery)
-
-
 def _stub_sync_dns(monkeypatch: pytest.MonkeyPatch, *ips: str) -> None:
     def getaddrinfo(
         host: str | None,
@@ -775,16 +750,20 @@ async def test_router_sends_pod_hosts_without_forwarding_discovery_flag(
     monkeypatch.setattr(loop, "getaddrinfo", async_getaddrinfo)
     monkeypatch.setattr(socket, "getaddrinfo", sync_getaddrinfo)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    _patch_router_pod_discovery(monkeypatch, clock=clock)
-
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(
             url__regex=re.compile(
                 r"http://(?:10\.0\.0\.1|10\.0\.0\.2|vllm-headless\.ns\.svc\.cluster\.local):8000/v1/chat/completions"
             )
         ).mock(return_value=httpx.Response(200, json=_CHAT_RESPONSE))
-        discovery_enabled_router: Final = Router(model_list=[_deployment()])
-        control_router: Final = Router(model_list=[_deployment(kubernetes_pod_discovery=None)])
+        discovery_enabled_router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(clock=clock, proxy_environment=_empty_proxy_environment),
+        )
+        control_router: Final = Router(
+            model_list=[_deployment(kubernetes_pod_discovery=None)],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(clock=clock, proxy_environment=_empty_proxy_environment),
+        )
         cached_async_client: Final = AsyncOpenAI(api_key="fake", base_url=_SERVICE_URL)
         cached_sync_client: Final = OpenAI(api_key="fake", base_url=_SERVICE_URL)
         discovery_enabled_router.cache.set_cache(
@@ -855,14 +834,18 @@ async def test_router_session_requests_stick_to_one_pod_for_sync_and_async(
     monkeypatch.setattr(loop, "getaddrinfo", async_getaddrinfo)
     monkeypatch.setattr(socket, "getaddrinfo", sync_getaddrinfo)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    _patch_router_pod_discovery(monkeypatch, clock=lambda: 0.0)
-
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(url__regex=_THREE_POD_CHAT_PATTERN).mock(
             return_value=httpx.Response(200, json=_CHAT_RESPONSE)
         )
-        async_router: Final = Router(model_list=[_deployment()])
-        sync_router: Final = Router(model_list=[_deployment()])
+        async_router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(clock=lambda: 0.0, proxy_environment=_empty_proxy_environment),
+        )
+        sync_router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(clock=lambda: 0.0, proxy_environment=_empty_proxy_environment),
+        )
         async_client: Final = _cache_async_client(async_router)
         sync_client: Final = _cache_sync_client(sync_router)
         for _ in range(6):
@@ -899,14 +882,18 @@ async def test_router_session_mapping_repeats_across_pods(
 
     monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    _patch_router_pod_discovery(monkeypatch, clock=lambda: 0.0)
-
     session_ids: Final = tuple(f"session-{index}" for index in range(30))
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(url__regex=_THREE_POD_CHAT_PATTERN).mock(
             return_value=httpx.Response(200, json=_CHAT_RESPONSE)
         )
-        router: Final = Router(model_list=[_deployment()])
+        router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(
+                clock=lambda: 0.0,
+                proxy_environment=_empty_proxy_environment,
+            ),
+        )
         client: Final = _cache_async_client(router)
         for session_id in session_ids:
             await _router_acompletion(router, metadata={"session_id": session_id})
@@ -942,13 +929,17 @@ async def test_generated_session_id_uses_round_robin_pod_selection(
 
     monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    _patch_router_pod_discovery(monkeypatch, clock=lambda: 0.0)
-
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(url__regex=_THREE_POD_CHAT_PATTERN).mock(
             return_value=httpx.Response(200, json=_CHAT_RESPONSE)
         )
-        router: Final = Router(model_list=[_deployment()])
+        router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(
+                clock=lambda: 0.0,
+                proxy_environment=_empty_proxy_environment,
+            ),
+        )
         client: Final = _cache_async_client(router)
         for _ in range(6):
             await _router_acompletion(
@@ -982,13 +973,17 @@ async def test_empty_session_id_uses_round_robin_pod_selection(
 
     monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    _patch_router_pod_discovery(monkeypatch, clock=lambda: 0.0)
-
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(url__regex=_THREE_POD_CHAT_PATTERN).mock(
             return_value=httpx.Response(200, json=_CHAT_RESPONSE)
         )
-        router: Final = Router(model_list=[_deployment()])
+        router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(
+                clock=lambda: 0.0,
+                proxy_environment=_empty_proxy_environment,
+            ),
+        )
         client: Final = _cache_async_client(router)
         for _ in range(6):
             await _router_acompletion(router, metadata={"session_id": ""})
@@ -1016,13 +1011,17 @@ async def test_session_requests_do_not_advance_round_robin_cursor(
 
     monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    _patch_router_pod_discovery(monkeypatch, clock=lambda: 0.0)
-
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(url__regex=_THREE_POD_CHAT_PATTERN).mock(
             return_value=httpx.Response(200, json=_CHAT_RESPONSE)
         )
-        router: Final = Router(model_list=[_deployment()])
+        router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(
+                clock=lambda: 0.0,
+                proxy_environment=_empty_proxy_environment,
+            ),
+        )
         client: Final = _cache_async_client(router)
         await _router_acompletion(router)
         await _router_acompletion(router, metadata={"session_id": "s1"})
@@ -1063,16 +1062,18 @@ async def test_session_pod_membership_change_remaps_only_affected_sessions(
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
 
     session_ids: Final = tuple(f"session-{index}" for index in range(60))
-    _patch_router_pod_discovery(
-        monkeypatch,
-        refresh_interval_seconds=10,
-        clock=_clock((0.0,) * 62 + (10.0,) * 10),
-    )
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(url__regex=_THREE_POD_CHAT_PATTERN).mock(
             return_value=httpx.Response(200, json=_CHAT_RESPONSE)
         )
-        router: Final = Router(model_list=[_deployment()])
+        router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(
+                refresh_interval_seconds=10,
+                clock=_clock((0.0,) * 62 + (10.0,) * 10),
+                proxy_environment=_empty_proxy_environment,
+            ),
+        )
         client: Final = _cache_async_client(router)
         for session_id in session_ids:
             await _router_acompletion(router, metadata={"session_id": session_id})
@@ -1132,14 +1133,24 @@ async def test_custom_routing_strategy_keeps_sync_and_async_sessions_on_one_pod(
     monkeypatch.setattr(loop, "getaddrinfo", async_getaddrinfo)
     monkeypatch.setattr(socket, "getaddrinfo", sync_getaddrinfo)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    _patch_router_pod_discovery(monkeypatch, clock=lambda: 0.0)
-
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(url__regex=_THREE_POD_CHAT_PATTERN).mock(
             return_value=httpx.Response(200, json=_CHAT_RESPONSE)
         )
-        async_router: Final = Router(model_list=[_deployment()])
-        sync_router: Final = Router(model_list=[_deployment()])
+        async_router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(
+                clock=lambda: 0.0,
+                proxy_environment=_empty_proxy_environment,
+            ),
+        )
+        sync_router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(
+                clock=lambda: 0.0,
+                proxy_environment=_empty_proxy_environment,
+            ),
+        )
         async_router.set_custom_routing_strategy(_ModelListRoutingStrategy(async_router))
         sync_router.set_custom_routing_strategy(_ModelListRoutingStrategy(sync_router))
         async_client: Final = _cache_async_client(async_router)
@@ -1176,13 +1187,17 @@ async def test_top_level_litellm_session_id_keeps_requests_on_one_pod(
 
     monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    _patch_router_pod_discovery(monkeypatch, clock=lambda: 0.0)
-
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(url__regex=_THREE_POD_CHAT_PATTERN).mock(
             return_value=httpx.Response(200, json=_CHAT_RESPONSE)
         )
-        router: Final = Router(model_list=[_deployment()])
+        router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(
+                clock=lambda: 0.0,
+                proxy_environment=_empty_proxy_environment,
+            ),
+        )
         client: Final = _cache_async_client(router)
         for _ in range(6):
             await _router_acompletion(router, litellm_session_id="s1")
@@ -1210,13 +1225,17 @@ async def test_generated_metadata_ignores_top_level_litellm_session_id(
 
     monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    _patch_router_pod_discovery(monkeypatch, clock=lambda: 0.0)
-
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(url__regex=_THREE_POD_CHAT_PATTERN).mock(
             return_value=httpx.Response(200, json=_CHAT_RESPONSE)
         )
-        router: Final = Router(model_list=[_deployment()])
+        router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(
+                clock=lambda: 0.0,
+                proxy_environment=_empty_proxy_environment,
+            ),
+        )
         client: Final = _cache_async_client(router)
         for _ in range(6):
             await _router_acompletion(
@@ -1267,16 +1286,26 @@ async def test_custom_routing_strategy_resolves_pod_hosts_for_sync_and_async_req
     monkeypatch.setattr(loop, "getaddrinfo", async_getaddrinfo)
     monkeypatch.setattr(socket, "getaddrinfo", sync_getaddrinfo)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    _patch_router_pod_discovery(monkeypatch, clock=clock)
-
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(
             url__regex=re.compile(
                 r"http://(?:10\.0\.0\.1|10\.0\.0\.2|vllm-headless\.ns\.svc\.cluster\.local):8000/v1/chat/completions"
             )
         ).mock(return_value=httpx.Response(200, json=_CHAT_RESPONSE))
-        async_router: Final = Router(model_list=[_deployment()])
-        sync_router: Final = Router(model_list=[_deployment()])
+        async_router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(
+                clock=clock,
+                proxy_environment=_empty_proxy_environment,
+            ),
+        )
+        sync_router: Final = Router(
+            model_list=[_deployment()],
+            kubernetes_pod_discovery=KubernetesPodDiscovery(
+                clock=clock,
+                proxy_environment=_empty_proxy_environment,
+            ),
+        )
         async_router.set_custom_routing_strategy(_ModelListRoutingStrategy(async_router))
         sync_router.set_custom_routing_strategy(_ModelListRoutingStrategy(sync_router))
         for _ in range(4):
@@ -1328,13 +1357,18 @@ async def test_router_async_retry_uses_next_discovered_pod(monkeypatch: pytest.M
 
     monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    _patch_router_pod_discovery(monkeypatch, clock=clock)
-
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(
             url__regex=re.compile(r"http://(?:10\.0\.0\.1|10\.0\.0\.2):8000/v1/chat/completions")
         ).mock(side_effect=response_for)
-        router: Final = Router(model_list=[_deployment()], num_retries=1)
+        router: Final = Router(
+            model_list=[_deployment()],
+            num_retries=1,
+            kubernetes_pod_discovery=KubernetesPodDiscovery(
+                clock=clock,
+                proxy_environment=_empty_proxy_environment,
+            ),
+        )
 
         response: Final = await router.acompletion(
             model="gpu-model",
@@ -1368,13 +1402,18 @@ def test_router_sync_retry_uses_next_discovered_pod(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    _patch_router_pod_discovery(monkeypatch, clock=clock)
-
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(
             url__regex=re.compile(r"http://(?:10\.0\.0\.1|10\.0\.0\.2):8000/v1/chat/completions")
         ).mock(side_effect=response_for)
-        router: Final = Router(model_list=[_deployment()], num_retries=1)
+        router: Final = Router(
+            model_list=[_deployment()],
+            num_retries=1,
+            kubernetes_pod_discovery=KubernetesPodDiscovery(
+                clock=clock,
+                proxy_environment=_empty_proxy_environment,
+            ),
+        )
 
         response: Final = router.completion(
             model="gpu-model",
@@ -1443,12 +1482,14 @@ async def test_router_session_retry_uses_next_rendezvous_pod(monkeypatch: pytest
 
     monkeypatch.setattr(loop, "getaddrinfo", getaddrinfo)
     monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
-    _patch_router_pod_discovery(monkeypatch)
-
     session_id: Final = "retry-session"
     with respx.mock(assert_all_called=True) as respx_mock:
         route: Final = respx_mock.post(url__regex=_THREE_POD_CHAT_PATTERN).mock(side_effect=response_for)
-        router: Final = Router(model_list=[_deployment()], num_retries=1)
+        router: Final = Router(
+            model_list=[_deployment()],
+            num_retries=1,
+            kubernetes_pod_discovery=KubernetesPodDiscovery(proxy_environment=_empty_proxy_environment),
+        )
 
         response: Final = await router.acompletion(
             model="gpu-model",

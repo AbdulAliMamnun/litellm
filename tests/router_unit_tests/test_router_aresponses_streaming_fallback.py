@@ -297,7 +297,7 @@ async def test_aresponses_with_streaming_fallbacks_wraps_streaming_iterator():
 # -------- every fallback entry stays reachable across hops --------
 
 
-def _make_three_tier_router(**router_kwargs) -> Router:
+def _make_three_tier_router(fallbacks: list[dict[str, list[str]]] | None = None) -> Router:
     return Router(
         model_list=[
             {"model_name": "primary", "litellm_params": {"model": "openai/primary-model", "api_key": "sk-test"}},
@@ -305,7 +305,7 @@ def _make_three_tier_router(**router_kwargs) -> Router:
             {"model_name": "fb2", "litellm_params": {"model": "openai/fb2-model", "api_key": "sk-test"}},
         ],
         num_retries=0,
-        **router_kwargs,
+        fallbacks=[] if fallbacks is None else fallbacks,
     )
 
 

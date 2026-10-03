@@ -11,7 +11,7 @@ import warnings
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from typing import Final, Literal
+from typing import Final, Literal, TypedDict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -19,6 +19,7 @@ import openai
 import pytest
 import respx
 from fastapi import HTTPException
+from typing_extensions import ReadOnly
 
 import litellm
 from litellm import Router
@@ -7895,6 +7896,64 @@ def test_update_kwargs_with_deployment_clears_pod_routing_on_non_discovery_fallb
     assert kwargs["metadata"][KUBERNETES_POD_ROUTING_KEY] is None
 
 
+def test_update_kwargs_with_deployment_synchronizes_existing_litellm_metadata_pod_routing():
+    from litellm.constants import KUBERNETES_POD_ROUTING_KEY
+
+    routing_record: Final = {
+        "service_host": "vllm-headless.ns.svc.cluster.local",
+        "pod_ip": "10.0.0.1",
+        "pod_count": 3,
+        "selection": "session_affinity",
+    }
+    spoofed_record: Final = {
+        "service_host": "vllm-headless.ns.svc.cluster.local",
+        "pod_ip": "10.0.0.9",
+        "pod_count": 3,
+        "selection": "round_robin",
+    }
+    deployment: Final = {
+        "model_name": "gpt-4o-mini",
+        "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "fake"},
+        "model_info": {"id": "discovery-id"},
+        KUBERNETES_POD_ROUTING_KEY: routing_record,
+    }
+    original_litellm_metadata: Final = {KUBERNETES_POD_ROUTING_KEY: spoofed_record}
+    kwargs: Final = {"metadata": {}, "litellm_metadata": original_litellm_metadata}
+    router: Final = litellm.Router(model_list=[deployment])
+
+    router._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs, function_name="completion")
+
+    assert kwargs["metadata"][KUBERNETES_POD_ROUTING_KEY] == routing_record
+    assert kwargs["litellm_metadata"][KUBERNETES_POD_ROUTING_KEY] == routing_record
+    assert kwargs["litellm_metadata"] is not original_litellm_metadata
+    assert original_litellm_metadata[KUBERNETES_POD_ROUTING_KEY] == spoofed_record
+
+
+def test_update_kwargs_with_non_discovery_deployment_clears_other_pod_routing_bucket():
+    from litellm.constants import KUBERNETES_POD_ROUTING_KEY
+
+    previous_record: Final = {
+        "service_host": "vllm-headless.ns.svc.cluster.local",
+        "pod_ip": "10.0.0.1",
+        "pod_count": 3,
+        "selection": "session_affinity",
+    }
+    deployment: Final = {
+        "model_name": "gpt-4o-mini",
+        "litellm_params": {"model": "openai/gpt-4o-mini", "api_key": "fake"},
+        "model_info": {"id": "fallback-id"},
+    }
+    original_litellm_metadata: Final = {KUBERNETES_POD_ROUTING_KEY: previous_record}
+    kwargs: Final = {"metadata": {}, "litellm_metadata": original_litellm_metadata}
+    router: Final = litellm.Router(model_list=[deployment])
+
+    router._update_kwargs_with_deployment(deployment=deployment, kwargs=kwargs, function_name="completion")
+
+    assert kwargs["metadata"][KUBERNETES_POD_ROUTING_KEY] is None
+    assert kwargs["litellm_metadata"][KUBERNETES_POD_ROUTING_KEY] is None
+    assert original_litellm_metadata[KUBERNETES_POD_ROUTING_KEY] == previous_record
+
+
 def test_combine_fallback_usage():
     """Test that _combine_fallback_usage merges partial and fallback usage."""
     from litellm.router import Router
@@ -13728,8 +13787,14 @@ def _anthropic_messages_make_wrapper() -> FallbackAwareAnthropicMessagesStream:
     return FallbackAwareAnthropicMessagesStream(_anthropic_messages_empty_generator(), object())
 
 
-def _anthropic_messages_make_router(**router_kwargs) -> Router:
-    router_kwargs.setdefault("fallbacks", [{"primary": ["fallback"]}])
+class _AnthropicMessagesRouterKwargs(TypedDict, total=False):
+    fallbacks: ReadOnly[list[dict[str, list[str]]] | None]
+    content_policy_fallbacks: ReadOnly[list[dict[str, list[str]]] | None]
+    enable_weighted_failover: ReadOnly[bool]
+
+
+def _anthropic_messages_make_router(router_kwargs: _AnthropicMessagesRouterKwargs) -> Router:
+    fallbacks: Final = router_kwargs.get("fallbacks", [{"primary": ["fallback"]}])
     return Router(
         model_list=[
             {
@@ -13746,7 +13811,9 @@ def _anthropic_messages_make_router(**router_kwargs) -> Router:
                 },
             },
         ],
-        **router_kwargs,
+        fallbacks=fallbacks,
+        content_policy_fallbacks=router_kwargs.get("content_policy_fallbacks"),
+        enable_weighted_failover=router_kwargs.get("enable_weighted_failover", False),
     )
 
 
@@ -14115,8 +14182,12 @@ def _anthropic_messages_two_order_primary_model_list() -> list:
         pytest.param({"fallbacks": None, "enable_weighted_failover": True}, {"model": "primary"}, True, id="weighted-failover"),
     ],
 )
-def test_anthropic_messages_stream_can_fall_back_direct_call(router_kwargs, request_kwargs, expected):
-    router = _anthropic_messages_make_router(**router_kwargs)
+def test_anthropic_messages_stream_can_fall_back_direct_call(
+    router_kwargs: _AnthropicMessagesRouterKwargs,
+    request_kwargs: dict[str, object],
+    expected: bool,
+) -> None:
+    router = _anthropic_messages_make_router(router_kwargs)
     assert router._anthropic_messages_stream_can_fall_back("primary", request_kwargs) is expected
 
 

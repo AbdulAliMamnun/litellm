@@ -25,8 +25,16 @@ from litellm.router_utils.fallback_event_handlers import _trigger_cooldown_for_f
 from litellm.types.router import AllowedFailsPolicy
 
 
-def _make_router(model_list: list, **kwargs) -> Router:
-    return Router(model_list=model_list, **kwargs)
+def _make_router(
+    model_list: list,
+    allowed_fails: int | None = None,
+    allowed_fails_policy: AllowedFailsPolicy | None = None,
+) -> Router:
+    return Router(
+        model_list=model_list,
+        allowed_fails=allowed_fails,
+        allowed_fails_policy=allowed_fails_policy,
+    )
 
 
 class TestDeploymentLevelAllowedFails:

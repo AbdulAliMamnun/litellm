@@ -49,6 +49,7 @@ ROUTER_SETTINGS_MANAGED_OUTSIDE_CONFIG: Final[frozenset[str]] = frozenset(
         "fallback_access_check",
         "fallback_budget_check",
         "auto_router_capability_limit",
+        "kubernetes_pod_discovery",
     }
 )
 DEFAULT_BATCH_SIZE: Final = int(os.getenv("DEFAULT_BATCH_SIZE", 512))

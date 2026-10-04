@@ -1630,10 +1630,12 @@ class WebSearchInterceptionLogger(CustomLogger):
         if user_api_key_auth is None:
             return
 
-        from litellm.proxy.auth.auth_checks import check_unregistered_search_fallback
+        from litellm.proxy.auth.auth_checks import check_unregistered_search_fallback, typed_general_settings
         from litellm.proxy.proxy_server import general_settings
 
-        check_unregistered_search_fallback(valid_token=user_api_key_auth, general_settings=general_settings)
+        check_unregistered_search_fallback(
+            valid_token=user_api_key_auth, general_settings=typed_general_settings(general_settings)
+        )
 
     async def _authorize_search_tool(
         self,
@@ -1651,6 +1653,7 @@ class WebSearchInterceptionLogger(CustomLogger):
         from litellm.proxy.auth.auth_checks import (
             can_caller_call_search_tool,
             get_team_object,
+            typed_general_settings,
         )
         from litellm.proxy.proxy_server import (
             general_settings,
@@ -1675,7 +1678,7 @@ class WebSearchInterceptionLogger(CustomLogger):
         await can_caller_call_search_tool(
             search_tool_name=search_tool_name,
             valid_token=user_api_key_auth,
-            general_settings=general_settings,
+            general_settings=typed_general_settings(general_settings),
             load_team_object=_load_team_object,
         )
 

@@ -1,4 +1,5 @@
 import contextlib
+from collections.abc import Callable
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1113,7 +1114,7 @@ def _search_caller(
 
 
 @pytest.fixture
-def search_permission_cache(monkeypatch):
+def search_permission_cache(monkeypatch: pytest.MonkeyPatch) -> Callable[[list[str] | None], None]:
     from litellm.proxy._types import LiteLLM_UserTable
     from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache, object_permission_cache_key
 
@@ -1145,7 +1146,10 @@ def search_permission_cache(monkeypatch):
 )
 @pytest.mark.asyncio
 async def test_filter_visible_search_tools_keyless_user_follows_search_tool_deny_by_default(
-    search_permission_cache, general_settings, user_search_tools, expected
+    search_permission_cache: Callable[[list[str] | None], None],
+    general_settings: dict[str, bool],
+    user_search_tools: list[str] | None,
+    expected: list[str],
 ):
     from litellm.proxy.search_endpoints.search_tool_management import _filter_visible_search_tools
 
@@ -1169,7 +1173,7 @@ async def test_filter_visible_search_tools_keyless_user_follows_search_tool_deny
 )
 @pytest.mark.asyncio
 async def test_filter_visible_search_tools_standalone_key_needs_its_own_grant(
-    search_permission_cache, key_search_tools, expected
+    search_permission_cache: Callable[[list[str] | None], None], key_search_tools: list[str] | None, expected: list[str]
 ):
     from litellm.proxy.search_endpoints.search_tool_management import _filter_visible_search_tools
 
@@ -1195,7 +1199,10 @@ async def test_filter_visible_search_tools_standalone_key_needs_its_own_grant(
 )
 @pytest.mark.asyncio
 async def test_filter_visible_search_tools_team_key_needs_key_and_team_grants(
-    search_permission_cache, key_search_tools, team_search_tools, expected
+    search_permission_cache: Callable[[list[str] | None], None],
+    key_search_tools: list[str],
+    team_search_tools: list[str],
+    expected: list[str],
 ):
     from litellm.proxy.search_endpoints.search_tool_management import _filter_visible_search_tools
 
@@ -1234,7 +1241,7 @@ async def test_filter_visible_search_tools_team_key_needs_key_and_team_grants(
 )
 @pytest.mark.asyncio
 async def test_filter_visible_search_tools_admin_under_search_tool_deny_by_default(
-    search_permission_cache, caller, expected
+    search_permission_cache: Callable[[list[str] | None], None], caller: UserAPIKeyAuth, expected: list[str]
 ):
     from litellm.proxy.search_endpoints.search_tool_management import _filter_visible_search_tools
 

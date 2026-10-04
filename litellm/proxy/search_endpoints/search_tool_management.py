@@ -113,16 +113,15 @@ async def _filter_visible_search_tools(
         can_grants_view_search_tool,
         is_search_tool_deny_by_default_applied,
         resolve_search_tool_grants,
+        typed_general_settings,
     )
+    from litellm.proxy.proxy_server import general_settings as proxy_general_settings
 
-    if general_settings is None:
-        from litellm.proxy.proxy_server import general_settings as proxy_general_settings
-
-        general_settings = proxy_general_settings
+    settings: Final = typed_general_settings(proxy_general_settings) if general_settings is None else general_settings
     if user_api_key_dict.user_role in (
         LitellmUserRoles.PROXY_ADMIN,
         LitellmUserRoles.PROXY_ADMIN_VIEW_ONLY,
-    ) and not is_search_tool_deny_by_default_applied(user_api_key_dict, general_settings):
+    ) and not is_search_tool_deny_by_default_applied(user_api_key_dict, settings):
         return search_tools
 
     allowlist_team_id: Final = _allowlist_team_id(user_api_key_dict)
@@ -130,7 +129,7 @@ async def _filter_visible_search_tools(
     async def _load_team_object() -> LiteLLM_TeamTable | None:
         return await lookup_team_object(allowlist_team_id, user_api_key_dict) if allowlist_team_id else None
 
-    grants: Final = await resolve_search_tool_grants(user_api_key_dict, general_settings, _load_team_object)
+    grants: Final = await resolve_search_tool_grants(user_api_key_dict, settings, _load_team_object)
     return [
         tool
         for tool in search_tools

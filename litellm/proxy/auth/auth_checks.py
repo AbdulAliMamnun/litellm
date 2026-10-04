@@ -383,6 +383,10 @@ def _typed_request_body(request_body: dict) -> Mapping[str, object]:
     return request_body
 
 
+def typed_general_settings(general_settings: dict) -> Mapping[str, object]:
+    return _typed_request_body(general_settings)
+
+
 class _JsonLoadsObj(Protocol):
     def __call__(self, data: str) -> object: ...
 

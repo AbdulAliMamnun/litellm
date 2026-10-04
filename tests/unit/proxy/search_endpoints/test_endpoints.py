@@ -100,7 +100,14 @@ def _cache_team(cache: UserApiKeyCache, search_tools: list[str]) -> None:
 )
 @pytest.mark.parametrize("path", ["/v1/search/search-a", "/search/search-a"])
 def test_direct_search_team_key_follows_search_tool_deny_by_default(
-    monkeypatch, cache, tavily, path, general_settings, key_search_tools, team_search_tools, expected_status
+    monkeypatch: pytest.MonkeyPatch,
+    cache: UserApiKeyCache,
+    tavily: respx.Route,
+    path: str,
+    general_settings: dict[str, bool],
+    key_search_tools: list[str],
+    team_search_tools: list[str],
+    expected_status: int,
 ):
     monkeypatch.setattr(proxy_server, "general_settings", general_settings)
     _cache_team(cache, team_search_tools)

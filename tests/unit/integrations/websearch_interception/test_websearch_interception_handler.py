@@ -918,7 +918,9 @@ def _single_search_tool_router(search_tool_name):
     return router
 
 
-def _virtual_key(team_id=None, key_search_tools=None, api_key="sk-caller"):
+def _virtual_key(
+    team_id: str | None = None, key_search_tools: list[str] | None = None, api_key: str = "sk-caller"
+) -> UserAPIKeyAuth:
     token = UserAPIKeyAuth(
         api_key=api_key,
         user_id="user-1",
@@ -946,7 +948,11 @@ def _virtual_key(team_id=None, key_search_tools=None, api_key="sk-caller"):
 )
 @pytest.mark.asyncio
 async def test_execute_search_team_key_follows_search_tool_deny_by_default(
-    monkeypatch, general_settings, key_search_tools, team_search_tools, expect_search
+    monkeypatch: pytest.MonkeyPatch,
+    general_settings: dict[str, bool],
+    key_search_tools: list[str] | None,
+    team_search_tools: list[str] | None,
+    expect_search: bool,
 ):
     import litellm
     from litellm.proxy import proxy_server
@@ -981,7 +987,9 @@ async def test_execute_search_team_key_follows_search_tool_deny_by_default(
 
 
 @pytest.mark.asyncio
-async def test_execute_search_key_without_grant_is_denied_under_search_tool_deny_by_default(monkeypatch):
+async def test_execute_search_key_without_grant_is_denied_under_search_tool_deny_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+):
     import litellm
     from litellm.proxy import proxy_server
 
@@ -1017,7 +1025,7 @@ async def test_execute_search_key_without_grant_is_denied_under_search_tool_deny
 )
 @pytest.mark.asyncio
 async def test_execute_search_unregistered_fallback_follows_search_tool_deny_by_default(
-    monkeypatch, general_settings, caller, expect_search
+    monkeypatch: pytest.MonkeyPatch, general_settings: dict[str, bool], caller: UserAPIKeyAuth, expect_search: bool
 ):
     import litellm
     from litellm.proxy import proxy_server

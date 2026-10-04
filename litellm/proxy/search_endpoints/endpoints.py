@@ -141,6 +141,7 @@ async def search(
         from litellm.proxy.auth.auth_checks import (
             can_caller_call_search_tool,
             get_team_object,
+            typed_general_settings,
         )
         from litellm.proxy.proxy_server import (
             prisma_client,
@@ -162,7 +163,7 @@ async def search(
             await can_caller_call_search_tool(
                 search_tool_name=search_tool_name_value,
                 valid_token=user_api_key_dict,
-                general_settings=general_settings,
+                general_settings=typed_general_settings(general_settings),
                 load_team_object=_load_team_object,
             )
         except Exception as e:

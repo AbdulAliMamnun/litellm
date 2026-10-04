@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from typing import Final
+from typing import Final, TypedDict
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -16,7 +16,11 @@ from litellm.proxy._types import (
     ProxyException,
     UserAPIKeyAuth,
 )
-from litellm.proxy.auth.auth_checks import can_caller_call_search_tool, check_unregistered_search_fallback
+from litellm.proxy.auth.auth_checks import (
+    TeamObjectLoader,
+    can_caller_call_search_tool,
+    check_unregistered_search_fallback,
+)
 from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache, object_permission_cache_key
 
 _DENY_ON: Final = {"search_tool_deny_by_default": True}
@@ -26,6 +30,15 @@ _USER: Final = ProxyErrorTypes.user_search_tool_access_denied
 _LEGACY: Final = ProxyErrorTypes.key_model_access_denied
 _TEAM_LOAD_FAILS: Final = "team-load-fails"
 _NO_ROW: Final = "no-row"
+
+
+class CallerFields(TypedDict, total=False):
+    virtual_key: bool
+    key_tools: list[str] | None | str
+    team_id: str | None
+    user_id: str | None
+    user_role: LitellmUserRoles | None
+    api_key: str
 
 
 def _grant(search_tools: list[str] | None, object_permission_id: str = "op") -> LiteLLM_ObjectPermissionTable:
@@ -52,7 +65,7 @@ def _caller(
     return token
 
 
-def _team_loader(team_tools: list[str] | None | str):
+def _team_loader(team_tools: list[str] | None | str) -> TeamObjectLoader:
     async def load() -> LiteLLM_TeamTable | None:
         if team_tools == _TEAM_LOAD_FAILS:
             raise ProxyException(message="team lookup failed", type="auth_error", param="team_id", code=404)
@@ -83,14 +96,16 @@ def _cache_user(cache: UserApiKeyCache, user_tools: list[str] | None) -> None:
 
 
 async def _denied_by(
-    general_settings: Mapping[str, object], caller: UserAPIKeyAuth, load_team=_no_team
+    general_settings: Mapping[str, object], caller: UserAPIKeyAuth, load_team: TeamObjectLoader = _no_team
 ) -> ProxyErrorTypes | None:
     try:
         await can_caller_call_search_tool("search-a", caller, general_settings, load_team)
     except ProxyException as e:
-        assert (e.code, e.param) == ("403", "search_tool_name")
-        return ProxyErrorTypes(e.type)
-    return None
+        denial = e
+    else:
+        return None
+    assert (denial.code, denial.param) == ("403", "search_tool_name")
+    return ProxyErrorTypes(denial.type)
 
 
 @pytest.mark.parametrize(
@@ -101,17 +116,21 @@ async def _denied_by(
 @pytest.mark.parametrize(
     "caller, team_tools, expected",
     [
-        pytest.param(dict(), None, None, id="no grants anywhere"),
-        pytest.param(dict(key_tools=[]), None, None, id="empty key list"),
-        pytest.param(dict(team_id="team-1"), [], None, id="empty team list"),
-        pytest.param(dict(key_tools=["search-b"]), None, _LEGACY, id="key allowlist excludes"),
-        pytest.param(dict(team_id="team-1"), ["search-b"], _LEGACY, id="team allowlist excludes"),
-        pytest.param(dict(key_tools=["search-a"], team_id="team-1"), ["search-a"], None, id="both allow"),
+        pytest.param(CallerFields(), None, None, id="no grants anywhere"),
+        pytest.param(CallerFields(key_tools=[]), None, None, id="empty key list"),
+        pytest.param(CallerFields(team_id="team-1"), [], None, id="empty team list"),
+        pytest.param(CallerFields(key_tools=["search-b"]), None, _LEGACY, id="key allowlist excludes"),
+        pytest.param(CallerFields(team_id="team-1"), ["search-b"], _LEGACY, id="team allowlist excludes"),
+        pytest.param(CallerFields(key_tools=["search-a"], team_id="team-1"), ["search-a"], None, id="both allow"),
     ],
 )
 @pytest.mark.asyncio
 async def test_search_tool_access_is_unchanged_without_search_tool_deny_by_default(
-    cache, general_settings, caller, team_tools, expected
+    cache: UserApiKeyCache,
+    general_settings: dict[str, bool],
+    caller: CallerFields,
+    team_tools: list[str] | None,
+    expected: ProxyErrorTypes | None,
 ):
     _cache_user(cache, ["search-b"])
     load_team: Final = _no_team if team_tools is None else _team_loader(team_tools)
@@ -121,49 +140,71 @@ async def test_search_tool_access_is_unchanged_without_search_tool_deny_by_defau
 @pytest.mark.parametrize(
     "caller, team_tools, user_tools, expected",
     [
-        pytest.param(dict(), None, ["search-a"], _KEY, id="standalone key, no permission row"),
-        pytest.param(dict(key_tools=None), None, None, _KEY, id="standalone key, search_tools null"),
-        pytest.param(dict(key_tools=[]), None, None, _KEY, id="standalone key, empty grant"),
-        pytest.param(dict(key_tools=["search-b"]), None, None, _KEY, id="standalone key, grants another tool"),
-        pytest.param(dict(key_tools=["search-a"]), None, [], None, id="standalone key, key grant is enough"),
-        pytest.param(dict(key_tools=[]), None, ["search-a"], _KEY, id="standalone key, user cannot stand in"),
-        pytest.param(dict(key_tools=["search-a"], team_id="team-1"), ["search-a"], None, None, id="team key, both"),
-        pytest.param(dict(key_tools=[], team_id="team-1"), ["search-a"], None, _KEY, id="team key, empty key"),
-        pytest.param(dict(key_tools=["search-a"], team_id="team-1"), [], None, _TEAM, id="team key, empty team"),
-        pytest.param(dict(key_tools=["search-a"], team_id="team-1"), None, None, _TEAM, id="team key, team null"),
+        pytest.param(CallerFields(), None, ["search-a"], _KEY, id="standalone key, no permission row"),
+        pytest.param(CallerFields(key_tools=None), None, None, _KEY, id="standalone key, search_tools null"),
+        pytest.param(CallerFields(key_tools=[]), None, None, _KEY, id="standalone key, empty grant"),
+        pytest.param(CallerFields(key_tools=["search-b"]), None, None, _KEY, id="standalone key, grants another tool"),
+        pytest.param(CallerFields(key_tools=["search-a"]), None, [], None, id="standalone key, key grant is enough"),
+        pytest.param(CallerFields(key_tools=[]), None, ["search-a"], _KEY, id="standalone key, user cannot stand in"),
         pytest.param(
-            dict(key_tools=["search-a"], team_id="team-1"), _NO_ROW, None, _TEAM, id="team key, team has no row"
+            CallerFields(key_tools=["search-a"], team_id="team-1"), ["search-a"], None, None, id="team key, both"
+        ),
+        pytest.param(CallerFields(key_tools=[], team_id="team-1"), ["search-a"], None, _KEY, id="team key, empty key"),
+        pytest.param(
+            CallerFields(key_tools=["search-a"], team_id="team-1"), [], None, _TEAM, id="team key, empty team"
         ),
         pytest.param(
-            dict(key_tools=["search-a"], team_id="team-1"),
+            CallerFields(key_tools=["search-a"], team_id="team-1"), None, None, _TEAM, id="team key, team null"
+        ),
+        pytest.param(
+            CallerFields(key_tools=["search-a"], team_id="team-1"), _NO_ROW, None, _TEAM, id="team key, team has no row"
+        ),
+        pytest.param(
+            CallerFields(key_tools=["search-a"], team_id="team-1"),
             _TEAM_LOAD_FAILS,
             None,
             _TEAM,
             id="team key, team fails to load",
         ),
         pytest.param(
-            dict(key_tools=["search-a"], team_id="team-1"),
+            CallerFields(key_tools=["search-a"], team_id="team-1"),
             ["search-b"],
             ["search-a"],
             _TEAM,
             id="team key, user cannot stand in for team",
         ),
-        pytest.param(dict(virtual_key=False, team_id="team-1"), ["search-a"], [], None, id="keyless team member"),
-        pytest.param(dict(virtual_key=False, team_id="team-1"), [], ["search-a"], _TEAM, id="keyless, empty team"),
-        pytest.param(dict(virtual_key=False), None, ["search-a"], None, id="keyless user, user grants"),
-        pytest.param(dict(virtual_key=False), None, None, _USER, id="keyless user, search_tools null"),
-        pytest.param(dict(virtual_key=False), None, [], _USER, id="keyless user, empty grant"),
-        pytest.param(dict(virtual_key=False, user_id="user-2"), None, None, _USER, id="keyless user fails to load"),
         pytest.param(
-            dict(user_role=LitellmUserRoles.PROXY_ADMIN), None, None, _KEY, id="proxy admin virtual key not exempt"
+            CallerFields(virtual_key=False, team_id="team-1"), ["search-a"], [], None, id="keyless team member"
         ),
-        pytest.param(dict(api_key=LITELLM_PROXY_MASTER_KEY_ALIAS), None, None, None, id="master key exempt"),
-        pytest.param(dict(team_id=UI_TEAM_ID, virtual_key=False), None, None, None, id="dashboard session exempt"),
+        pytest.param(
+            CallerFields(virtual_key=False, team_id="team-1"), [], ["search-a"], _TEAM, id="keyless, empty team"
+        ),
+        pytest.param(CallerFields(virtual_key=False), None, ["search-a"], None, id="keyless user, user grants"),
+        pytest.param(CallerFields(virtual_key=False), None, None, _USER, id="keyless user, search_tools null"),
+        pytest.param(CallerFields(virtual_key=False), None, [], _USER, id="keyless user, empty grant"),
+        pytest.param(
+            CallerFields(virtual_key=False, user_id="user-2"), None, None, _USER, id="keyless user fails to load"
+        ),
+        pytest.param(
+            CallerFields(user_role=LitellmUserRoles.PROXY_ADMIN),
+            None,
+            None,
+            _KEY,
+            id="proxy admin virtual key not exempt",
+        ),
+        pytest.param(CallerFields(api_key=LITELLM_PROXY_MASTER_KEY_ALIAS), None, None, None, id="master key exempt"),
+        pytest.param(
+            CallerFields(team_id=UI_TEAM_ID, virtual_key=False), None, None, None, id="dashboard session exempt"
+        ),
     ],
 )
 @pytest.mark.asyncio
 async def test_search_tool_deny_by_default_requires_every_owning_identity_to_grant(
-    cache, caller, team_tools, user_tools, expected
+    cache: UserApiKeyCache,
+    caller: CallerFields,
+    team_tools: list[str] | str | None,
+    user_tools: list[str] | None,
+    expected: ProxyErrorTypes | None,
 ):
     if user_tools is not None:
         _cache_user(cache, user_tools)
@@ -175,18 +216,20 @@ async def test_search_tool_deny_by_default_requires_every_owning_identity_to_gra
 
 @pytest.mark.parametrize("value", ["true", "enabled", 1], ids=["string-true", "string", "int"])
 @pytest.mark.asyncio
-async def test_non_boolean_search_tool_deny_by_default_enables_the_policy(cache, value):
+async def test_non_boolean_search_tool_deny_by_default_enables_the_policy(cache: UserApiKeyCache, value: object):
     assert await _denied_by({"search_tool_deny_by_default": value}, _caller(key_tools=[])) == _KEY
 
 
 @pytest.mark.asyncio
-async def test_search_tool_deny_by_default_denies_when_no_database_is_connected(cache, monkeypatch):
+async def test_search_tool_deny_by_default_denies_when_no_database_is_connected(
+    cache: UserApiKeyCache, monkeypatch: pytest.MonkeyPatch
+):
     monkeypatch.setattr(proxy_server, "prisma_client", None)
     assert await _denied_by(_DENY_ON, _caller(key_tools=["search-a"])) == _KEY
 
 
 @pytest.mark.asyncio
-async def test_search_tool_deny_by_default_reads_the_user_grant_on_every_call(cache):
+async def test_search_tool_deny_by_default_reads_the_user_grant_on_every_call(cache: UserApiKeyCache):
     caller: Final = _caller(virtual_key=False)
     _cache_user(cache, ["search-a"])
     assert await _denied_by(_DENY_ON, caller) is None
@@ -195,7 +238,9 @@ async def test_search_tool_deny_by_default_reads_the_user_grant_on_every_call(ca
 
 
 @pytest.mark.asyncio
-async def test_search_tool_deny_by_default_does_not_load_the_user_when_off(cache, monkeypatch):
+async def test_search_tool_deny_by_default_does_not_load_the_user_when_off(
+    cache: UserApiKeyCache, monkeypatch: pytest.MonkeyPatch
+):
     get_user_object: Final = AsyncMock()
     monkeypatch.setattr("litellm.proxy.auth.auth_checks.get_user_object", get_user_object)
     assert await _denied_by({}, _caller(virtual_key=False)) is None
@@ -213,7 +258,9 @@ async def test_search_tool_deny_by_default_does_not_load_the_user_when_off(cache
         pytest.param(_DENY_ON, _caller(api_key=LITELLM_PROXY_MASTER_KEY_ALIAS), None, id="master key"),
     ],
 )
-def test_unregistered_search_fallback_follows_search_tool_deny_by_default(general_settings, caller, expected):
+def test_unregistered_search_fallback_follows_search_tool_deny_by_default(
+    general_settings: Mapping[str, object], caller: UserAPIKeyAuth, expected: ProxyErrorTypes | None
+):
     if expected is None:
         assert check_unregistered_search_fallback(caller, general_settings) is True
         return

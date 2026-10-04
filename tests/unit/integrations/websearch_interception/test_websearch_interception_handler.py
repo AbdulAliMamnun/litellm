@@ -1020,12 +1020,16 @@ async def test_execute_search_key_without_grant_is_denied_under_search_tool_deny
             False,
         ),
         ({"search_tool_deny_by_default": True}, _virtual_key(api_key="litellm_proxy_master_key"), True),
+        ({"search_tool_deny_by_default": True}, None, True),
     ],
-    ids=["omitted", "false", "virtual-key", "proxy-admin-not-exempt", "master-key-exempt"],
+    ids=["omitted", "false", "virtual-key", "proxy-admin-not-exempt", "master-key-exempt", "sdk-without-proxy-auth"],
 )
 @pytest.mark.asyncio
 async def test_execute_search_unregistered_fallback_follows_search_tool_deny_by_default(
-    monkeypatch: pytest.MonkeyPatch, general_settings: dict[str, bool], caller: UserAPIKeyAuth, expect_search: bool
+    monkeypatch: pytest.MonkeyPatch,
+    general_settings: dict[str, bool],
+    caller: UserAPIKeyAuth | None,
+    expect_search: bool,
 ):
     import litellm
     from litellm.proxy import proxy_server
@@ -1038,7 +1042,7 @@ async def test_execute_search_unregistered_fallback_follows_search_tool_deny_by_
     monkeypatch.setattr(proxy_server, "llm_router", router)
     monkeypatch.setattr(proxy_server, "general_settings", general_settings)
     monkeypatch.setattr(litellm, "asearch", mock_asearch)
-    kwargs = {"metadata": {"user_api_key_auth": caller}}
+    kwargs = {"metadata": {} if caller is None else {"user_api_key_auth": caller}}
 
     if expect_search:
         await logger._execute_search("what is litellm", kwargs=kwargs)

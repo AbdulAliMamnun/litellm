@@ -185,6 +185,7 @@ async def test_search_tool_access_is_unchanged_without_search_tool_deny_by_defau
         pytest.param(
             CallerFields(virtual_key=False, user_id="user-2"), None, None, _USER, id="keyless user fails to load"
         ),
+        pytest.param(CallerFields(virtual_key=False, user_id=None), None, None, _USER, id="keyless caller, no user"),
         pytest.param(
             CallerFields(user_role=LitellmUserRoles.PROXY_ADMIN),
             None,

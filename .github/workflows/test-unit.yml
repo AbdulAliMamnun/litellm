@@ -176,6 +176,7 @@ jobs:
               tests/unit/proxy/prompts
               tests/unit/proxy/rag_endpoints
               tests/unit/proxy/rerank_endpoints
+              tests/unit/proxy/search_endpoints
               tests/unit/proxy/realtime_endpoints
               tests/unit/proxy/ui_crud_endpoints
               tests/unit/proxy/config_resolvers
